@@ -18,6 +18,7 @@
         <module>cdk</module>
         <module>lambda-products</module>
         <module>lambda-orders</module>
+        <module>user-service</module>
     </modules>
 
     <properties>
