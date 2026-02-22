@@ -1,96 +1,85 @@
-# Learn AWS API Gateway — Architecture Documentation
+# HandsOn AWS API Gateway
 
-## Overview
+A hands-on learning project that builds a mini e-commerce API on AWS, progressing from basic Lambda integration through throttling, rate limiting, and private microservices behind VPC Link.
 
-A hands-on learning project that builds a mini e-commerce API on AWS using:
-- **AWS CDK (Java)** — infrastructure as code
-- **AWS Lambda (Java 21)** — serverless compute
-- **AWS API Gateway REST API** — managed HTTP gateway
-- **CloudWatch Logs** — observability
-
-The project is structured in phases. Each phase adds a new layer of complexity on top of the previous one.
+**Stack:** AWS CDK (Java) · Lambda (Java 21) · ECS Fargate · API Gateway REST API · NLB · VPC Link
 
 ---
 
 ## Project Structure
 
 ```
-LearnAWSBasics/
+handsonaws-api-gateway/
 ├── pom.xml                              ← Parent Maven POM (version management)
 │
-├── cdk/                                 ← CDK infrastructure (defines all AWS resources)
-│   ├── cdk.json                         ← CDK entry point config
-│   ├── pom.xml
+├── cdk/                                 ← CDK infrastructure (all AWS resources)
+│   ├── cdk.json
 │   └── src/main/java/com/learn/
-│       ├── LearnAwsApp.java             ← CDK App entry point
+│       ├── LearnAwsApp.java
 │       └── stacks/
-│           └── Phase1Stack.java         ← All AWS resources for Phase 1 + 2
+│           └── Phase1Stack.java         ← All phases in one CDK stack
 │
-├── lambda-products/                     ← Products microservice
-│   ├── pom.xml                          ← Builds fat JAR via maven-shade-plugin
+├── lambda-products/                     ← Products Lambda (GET /products)
 │   └── src/main/java/com/learn/lambda/
 │       └── ProductsHandler.java
 │
-└── lambda-orders/                       ← Orders microservice
-    ├── pom.xml
-    └── src/main/java/com/learn/lambda/
-        └── OrdersHandler.java
+├── lambda-orders/                       ← Orders Lambda (GET /orders, POST /orders)
+│   └── src/main/java/com/learn/lambda/
+│       └── OrdersHandler.java
+│
+└── user-service/                        ← User Service (ECS Fargate, GET/POST /users)
+    ├── Dockerfile
+    └── src/main/java/com/learn/userservice/
+        └── UserServiceApp.java
 ```
 
 ---
 
-## Architecture Diagram
+## Architecture
 
 ```
-                        ┌─────────────────────────────────┐
-                        │         Internet / Client        │
-                        └──────────────┬──────────────────┘
-                                       │  HTTPS
-                                       │  x-api-key: <key>
-                                       ▼
-                        ┌─────────────────────────────────────────────────────────────┐
-                        │             AWS API Gateway  (REST API)                      │
-                        │                  Stage: dev                                  │
-                        │                                                              │
-                        │  ┌─── Request Pipeline (in order) ──────────────────────┐   │
-                        │  │                                                       │   │
-                        │  │  Step 1 — API Key check                               │   │
-                        │  │           Missing/invalid key → 403 Forbidden         │   │
-                        │  │                                                       │   │
-                        │  │  Step 2 — Usage Plan (per-client)                     │   │
-                        │  │           Quota exceeded  → 429 Quota Exceeded        │   │
-                        │  │           Rate exceeded   → 429 Too Many Requests     │   │
-                        │  │                                                       │   │
-                        │  │  Step 3 — Stage throttle (global API ceiling)         │   │
-                        │  │           Rate: 10 RPS  / Burst: 5                    │   │
-                        │  │           Exceeded       → 429 Too Many Requests     │   │
-                        │  │                                                       │   │
-                        │  │  Step 4 — Method throttle (per route)                 │   │
-                        │  │           GET /products  8 RPS / 4 burst             │   │
-                        │  │           GET /orders    5 RPS / 3 burst             │   │
-                        │  │           POST /orders   3 RPS / 2 burst             │   │
-                        │  │                                                       │   │
-                        │  │  Step 5 — Route + Lambda invoke                       │   │
-                        │  │                                                       │   │
-                        │  └───────────────────────────────────────────────────────┘   │
-                        │              │                        │                       │
-                        │        GET /products          GET /orders                    │
-                        │                               POST /orders                   │
-                        └──────────────┼────────────────────────┼──────────────────────┘
-                                       │                        │
-                          ┌────────────▼──────────┐  ┌─────────▼──────────┐
-                          │   Lambda: products    │  │  Lambda: orders    │
-                          │   Java 21 / 512 MB   │  │  Java 21 / 512 MB  │
-                          │   ProductsHandler    │  │  OrdersHandler     │
-                          └────────────┬──────────┘  └─────────┬──────────┘
-                                       │                        │
-                        ┌──────────────▼────────────────────────▼──────────────────────┐
-                        │                    CloudWatch Logs                             │
-                        │                                                               │
-                        │  /aws/lambda/learn-apigw-products   ← Lambda execution logs  │
-                        │  /aws/lambda/learn-apigw-orders     ← Lambda execution logs  │
-                        │  /aws/apigateway/learn-apigw-access ← One line per request   │
-                        └───────────────────────────────────────────────────────────────┘
+                       ┌──────────────────────────────────────────────────────────────┐
+                       │                     Internet / Client                         │
+                       └───────────────────────────┬──────────────────────────────────┘
+                                                   │  HTTPS + x-api-key
+                                                   ▼
+                       ┌──────────────────────────────────────────────────────────────┐
+                       │                API Gateway REST API  (stage: dev)             │
+                       │                                                              │
+                       │   Request Pipeline (applied in order):                       │
+                       │     1. API Key check          → 403 if missing/invalid       │
+                       │     2. Usage Plan (per-client) → 429 if quota/rate exceeded  │
+                       │     3. Stage throttle          → 429 if > 10 RPS / 5 burst   │
+                       │     4. Method throttle         → 429 if per-route limit hit  │
+                       │     5. Integration invoke                                    │
+                       │                                                              │
+                       │   /products   /orders          /users                        │
+                       └──────┬────────────┬────────────────┬─────────────────────────┘
+                              │            │                │
+                              │            │         VPC Link (private tunnel)
+                              │            │                │
+                   ┌──────────▼──┐  ┌──────▼──────┐        ▼
+                   │  Lambda     │  │  Lambda     │  ┌─────────────────────────────────┐
+                   │  products   │  │  orders     │  │         VPC (private)            │
+                   │  Java 21    │  │  Java 21    │  │                                  │
+                   └─────────────┘  └─────────────┘  │  ┌──────────────────────────┐   │
+                                                     │  │  NLB (internal)          │   │
+                                                     │  │  no public IP/DNS        │   │
+                                                     │  └────────────┬─────────────┘   │
+                                                     │               │                  │
+                                                     │  ┌────────────▼─────────────┐   │
+                                                     │  │  ECS Fargate             │   │
+                                                     │  │  user-service  :8080     │   │
+                                                     │  │  Java 21 virtual threads │   │
+                                                     │  └──────────────────────────┘   │
+                                                     └─────────────────────────────────┘
+                       ┌──────────────────────────────────────────────────────────────┐
+                       │                       CloudWatch Logs                         │
+                       │  /aws/lambda/learn-apigw-products   ← Lambda logs            │
+                       │  /aws/lambda/learn-apigw-orders     ← Lambda logs            │
+                       │  /aws/apigateway/learn-apigw-access ← One JSON line/request  │
+                       │  /ecs/learn-apigw-user-service      ← ECS container logs     │
+                       └──────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -99,30 +88,36 @@ LearnAWSBasics/
 
 **Base URL:** `https://1s2r943y7i.execute-api.us-west-2.amazonaws.com/dev`
 
-| Method | Path | Handler | Description |
-|--------|------|---------|-------------|
-| `GET` | `/products` | `ProductsHandler` | Returns product catalog |
-| `GET` | `/orders` | `OrdersHandler` | Lists all orders |
-| `POST` | `/orders` | `OrdersHandler` | Creates a new order |
-
 All endpoints require the `x-api-key` header.
+
+| Method | Path | Backend | Integration Type |
+|--------|------|---------|-----------------|
+| `GET` | `/products` | Lambda `learn-apigw-products` | Lambda Proxy |
+| `GET` | `/orders` | Lambda `learn-apigw-orders` | Lambda Proxy |
+| `POST` | `/orders` | Lambda `learn-apigw-orders` | Lambda Proxy |
+| `GET` | `/users` | ECS Fargate via NLB | HTTP Proxy / VPC Link |
+| `POST` | `/users` | ECS Fargate via NLB | HTTP Proxy / VPC Link |
 
 ### Example Requests
 
 ```bash
 BASE=https://1s2r943y7i.execute-api.us-west-2.amazonaws.com/dev
+KEY=<your-api-key>
 
-# List products
-curl -H "x-api-key: <your-key>" $BASE/products
+# Products
+curl -H "x-api-key: $KEY" $BASE/products
 
-# Create an order
-curl -X POST $BASE/orders \
-  -H "x-api-key: <your-key>" \
+# Orders
+curl -H "x-api-key: $KEY" $BASE/orders
+curl -X POST $BASE/orders -H "x-api-key: $KEY" \
   -H "Content-Type: application/json" \
   -d '{"productId":"p-001","quantity":2}'
 
-# List orders
-curl -H "x-api-key: <your-key>" $BASE/orders
+# Users
+curl -H "x-api-key: $KEY" $BASE/users
+curl -X POST $BASE/users -H "x-api-key: $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Alice","email":"alice@example.com","tier":"premium"}'
 ```
 
 ### Response Codes
@@ -130,18 +125,17 @@ curl -H "x-api-key: <your-key>" $BASE/orders
 | Code | Meaning | Triggered by |
 |------|---------|-------------|
 | `200` | OK | Successful GET |
-| `201` | Created | Successful POST /orders |
-| `400` | Bad Request | POST /orders with empty body |
+| `201` | Created | Successful POST |
+| `400` | Bad Request | Missing required fields in POST body |
 | `403` | Forbidden | Missing or invalid API key |
-| `405` | Method Not Allowed | Unsupported HTTP method on a route |
 | `429` | Too Many Requests | Quota exhausted or rate limit exceeded |
 | `500` | Internal Server Error | Lambda concurrency throttle (free tier) |
 
 ---
 
-## Throttling Architecture
+## Throttling Architecture (Phase 2)
 
-API Gateway applies throttle checks in layers. A request must pass **all** layers to reach Lambda.
+Throttle checks are applied in layers. A request must pass **all** layers to reach the backend.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -150,109 +144,85 @@ API Gateway applies throttle checks in layers. A request must pass **all** layer
 │            Excess → 500 Internal Server Error (not 429!)            │
 ├─────────────────────────────────────────────────────────────────────┤
 │  Layer 2 — Stage Default Throttle  (applies to all methods)         │
-│            Rate:  10 RPS                                            │
-│            Burst:  5 concurrent                                     │
+│            Rate:  10 RPS  /  Burst: 5                               │
 ├─────────────────────────────────────────────────────────────────────┤
 │  Layer 3 — Method Throttle  (per-route override)                    │
 │            GET  /products  →  8 RPS / 4 burst                       │
 │            GET  /orders    →  5 RPS / 3 burst                       │
 │            POST /orders    →  3 RPS / 2 burst                       │
+│            GET  /users     →  8 RPS / 4 burst                       │
+│            POST /users     →  5 RPS / 3 burst                       │
 ├─────────────────────────────────────────────────────────────────────┤
 │  Layer 4 — Usage Plan  (per API key / per client)                   │
 │                                                                     │
-│   ┌────────────────────────────────────────────────────────────┐   │
-│   │  basic-client key                                          │   │
-│   │    Rate:  5 RPS   Burst: 10   Quota: 10 req/day           │   │
-│   └────────────────────────────────────────────────────────────┘   │
-│   ┌────────────────────────────────────────────────────────────┐   │
-│   │  premium-client key                                        │   │
-│   │    Rate: 50 RPS   Burst: 100  Quota: 10 000 req/day       │   │
-│   └────────────────────────────────────────────────────────────┘   │
+│   basic-client:    5 RPS  / 10 burst  /     10 req/day  (demo)      │
+│   premium-client: 50 RPS  / 100 burst / 10 000 req/day              │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-### Key Insight: Free Tier Throttling Behavior
-
-On a free-tier account, Lambda's concurrency limit (10) is **lower** than typical production API GW burst limits. This means Lambda throttles requests **before** API GW gets a chance to, resulting in `500` instead of `429`.
+**Key insight — free tier throttling behavior:**
 
 | Throttle Source | Response | Detected via |
 |----------------|----------|-------------|
-| API GW Stage/Method | `429 Too Many Requests` | CloudWatch `ThrottleCount` metric |
-| API GW Usage Plan — rate | `429 Too Many Requests` | CloudWatch `4XXError` metric |
-| API GW Usage Plan — quota | `429 Quota Exceeded` | CloudWatch `4XXError` metric |
-| Lambda concurrency | `500 Internal Server Error` | CloudWatch `Lambda.Throttles` metric |
+| API GW Stage/Method throttle | `429 Too Many Requests` | CloudWatch `ThrottleCount` |
+| Usage Plan rate exceeded | `429 Too Many Requests` | CloudWatch `4XXError` |
+| Usage Plan quota exceeded | `429 Quota Exceeded` | CloudWatch `4XXError` |
+| Lambda concurrency limit | `500 Internal Server Error` | CloudWatch `Lambda.Throttles` |
 
 ---
 
-## Lambda Functions
+## VPC Link — How It Works (Phase 3)
+
+VPC Link is what makes the User Service private. Without it, you'd need to expose the ECS container to the internet.
+
+```
+Client
+  → API Gateway (public AWS service, no VPC)
+  → VPC Link (AWS-managed private tunnel into your VPC)
+  → NLB (internal — no public IP, no internet access)
+  → ECS Fargate task (User Service on port 8080)
+```
+
+**Why NLB, not ALB?**
+REST API Gateway VPC Link requires a Network Load Balancer. NLB operates at Layer 4 (TCP), forwarding raw connections directly to ECS tasks.
+
+**VPC design (zero NAT cost):**
+- 2 public subnets across 2 AZs
+- No NAT Gateway → `$0/hr` saved vs private subnets
+- ECS tasks use `assignPublicIp=true` to pull Docker images from ECR directly
+- The NLB is `internetFacing=false` — it has no public DNS, only a VPC-internal address
+- The only way to reach the User Service from the internet is through API Gateway
+
+---
+
+## Services & Handlers
 
 ### ProductsHandler
 
 **File:** `lambda-products/src/main/java/com/learn/lambda/ProductsHandler.java`
 
-```
-Route:      GET /products
-Runtime:    Java 21
-Memory:     512 MB
-Timeout:    30 seconds
-Integration: Lambda Proxy (API GW passes full HTTP request, Lambda controls full response)
-```
-
 - Implements `RequestHandler<APIGatewayProxyRequestEvent, APIGatewayProxyResponseEvent>`
 - Returns a hardcoded product catalog as JSON
-- Stateless — every invocation is identical
-- `CATALOG` is a `static final` field initialized once per Lambda instance
-
-**Response shape:**
-```json
-[
-  { "id": "p-001", "name": "Laptop",     "price": 999.99, "category": "Electronics" },
-  { "id": "p-002", "name": "Headphones", "price": 149.99, "category": "Electronics" },
-  { "id": "p-003", "name": "Coffee Mug", "price":  12.99, "category": "Kitchen"     }
-]
-```
-
----
+- `CATALOG` is `static final` — initialized once per Lambda instance, shared across warm invocations
 
 ### OrdersHandler
 
 **File:** `lambda-orders/src/main/java/com/learn/lambda/OrdersHandler.java`
 
-```
-Routes:     GET  /orders  — list all orders
-            POST /orders  — create a new order
-Runtime:    Java 21
-Memory:     512 MB
-Timeout:    30 seconds
-Integration: Lambda Proxy
-```
+- Single Lambda handles `GET` and `POST` by switching on `event.getHttpMethod()`
+- Orders stored in `static List<Map<String, Object>>` — survives warm invocations, resets on cold start
+- `POST` validates body, appends `orderId` (UUID) and `status: PENDING`
 
-- Single Lambda handles both `GET` and `POST` by switching on `event.getHttpMethod()`
-- Orders are stored in a `static List<Map<String, Object>>` — survives **warm** invocations, resets on **cold start**
-- `POST` validates the request body, adds `orderId` (UUID) and `status: PENDING`
+### UserServiceApp
 
-**Important:** The in-memory store is intentional for learning. It demonstrates Lambda's execution lifecycle (warm vs. cold start). In production, this would be DynamoDB or RDS.
+**File:** `user-service/src/main/java/com/learn/userservice/UserServiceApp.java`
 
-**POST request body:**
-```json
-{ "productId": "p-001", "quantity": 2 }
-```
-
-**POST response (201 Created):**
-```json
-{ "productId": "p-001", "quantity": 2, "orderId": "uuid-...", "status": "PENDING" }
-```
-
----
-
-## Gateway Responses (Custom Error Shapes)
-
-Without custom gateway responses, API GW returns `500 Internal server error` for throttled requests. We override two error types:
-
-| Response Type | HTTP Status | Body |
-|--------------|-------------|------|
-| `THROTTLED` | 429 | `{"error":"Too Many Requests","message":"Rate limit exceeded..."}` |
-| `QUOTA_EXCEEDED` | 429 | `{"error":"Quota Exceeded","message":"Daily request quota exhausted..."}` |
+- Built-in JDK `HttpServer` — no frameworks, no extra dependencies
+- Java 21 virtual threads (`Executors.newVirtualThreadPerTaskExecutor()`) — one cheap thread per request
+- `GET /health` → NLB target group health check endpoint (must return 200)
+- `GET /users` → returns all users
+- `POST /users` → creates a user, returns 201
+- In-memory store — resets when the ECS task restarts (same concept as Lambda cold start)
 
 ---
 
@@ -260,51 +230,42 @@ Without custom gateway responses, API GW returns `500 Internal server error` for
 
 ### Access Logs — `/aws/apigateway/learn-apigw-access`
 
-One JSON line per request, regardless of outcome (200, 403, 429, 500).
-Retention: 7 days (auto-deleted, no ongoing cost).
+One JSON line per request, every status code.
 
-**Log shape:**
 ```json
 {
   "requestId":  "3ed5a793-...",
   "timestamp":  "22/Feb/2026:10:23:56 +0000",
   "method":     "GET",
-  "path":       "/products",
-  "status":     429,
-  "responseMs": 8,
-  "apiKeyId":   "379xhlii14",
+  "path":       "/users",
+  "status":     200,
+  "responseMs": 12,
+  "apiKeyId":   "imh8gqb2qj",
   "ip":         "24.16.80.46",
-  "errorType":  "QUOTA_EXCEEDED",
-  "errorMsg":   "Limit Exceeded"
+  "errorType":  "",
+  "errorMsg":   ""
 }
 ```
 
 **Notable fields:**
-- `responseMs: 8` on a 429 → Lambda was never invoked (API GW handled it entirely)
-- `responseMs: 200+` on a 200 → Lambda cold start included in that time
-- `errorType` → exact reason for failure (`QUOTA_EXCEEDED`, `THROTTLED`, `INVALID_API_KEY`)
-- `apiKeyId: "-"` → request had no API key (403)
+- `responseMs: 8` on a 429 → Lambda/ECS never invoked, API GW rejected at the gate
+- `responseMs: 1000+` on first `/users` 200 → ECS task warm-up included
+- `errorType: QUOTA_EXCEEDED` → exact failure reason, no guessing
 
-### Lambda Execution Logs — `/aws/lambda/learn-apigw-*`
+### ECS Container Logs — `/ecs/learn-apigw-user-service`
 
-One log stream per Lambda instance. Each invocation writes:
 ```
-START RequestId: abc-123 Version: $LATEST
-GET /products invoked          ← context.getLogger().log(...)
-END RequestId: abc-123
-REPORT RequestId: abc-123  Duration: 3ms  Billed: 4ms  Memory: 512MB  Max Used: 109MB
-```
-
-Cold starts additionally write:
-```
-Init Duration: 1234ms          ← JVM startup + class loading (Java-specific)
+User Service started on port 8080
 ```
 
 ### Useful CLI Commands
 
 ```bash
-# Stream live Lambda logs
-aws logs tail /aws/lambda/learn-apigw-products --follow --format short
+# Stream live access logs
+aws logs tail /aws/apigateway/learn-apigw-access --follow --format short
+
+# Stream ECS user-service logs
+aws logs tail /ecs/learn-apigw-user-service --follow --format short
 
 # Find all 429s in the last hour
 aws logs filter-log-events \
@@ -319,18 +280,7 @@ aws cloudwatch get-metric-statistics \
   --dimensions Name=ApiName,Value=learn-apigw Name=Stage,Value=dev \
   --start-time $(date -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ) \
   --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) \
-  --period 3600 --statistics Sum \
-  --query 'Datapoints[*].Sum' --output text
-
-# Check Lambda throttle count
-aws cloudwatch get-metric-statistics \
-  --namespace AWS/Lambda \
-  --metric-name Throttles \
-  --dimensions Name=FunctionName,Value=learn-apigw-products \
-  --start-time $(date -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ) \
-  --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) \
-  --period 3600 --statistics Sum \
-  --query 'Datapoints[*].Sum' --output text
+  --period 3600 --statistics Sum
 
 # Check daily quota usage for basic key
 aws apigateway get-usage \
@@ -342,21 +292,21 @@ aws apigateway get-usage \
 
 ### CloudWatch Log Insights Queries
 
-Run in **CloudWatch → Logs → Log Insights**, select log group `/aws/apigateway/learn-apigw-access`:
+Log group: `/aws/apigateway/learn-apigw-access`
 
 ```sql
--- All 429s
-fields timestamp, method, path, status, apiKeyId, errorType, responseMs
-| filter status = 429
+-- All errors by type
+fields timestamp, method, path, status, errorType, responseMs
+| filter status >= 400
 | sort @timestamp desc
 
--- Slowest successful requests
+-- Slowest successful requests (spot cold starts)
 fields timestamp, method, path, status, responseMs
 | filter status = 200
 | sort responseMs desc
 | limit 20
 
--- Requests per minute by status code
+-- Requests per minute by status
 fields status
 | stats count() as requests by bin(1m), status
 | sort @timestamp desc
@@ -370,30 +320,39 @@ fields apiKeyId, errorType
 
 ---
 
-## Infrastructure — AWS Resources Deployed
+## Infrastructure — All AWS Resources
 
-All resources defined in `Phase1Stack.java`, deployed via `cdk deploy`.
+All resources are defined in `Phase1Stack.java` and deployed as a single CloudFormation stack.
 
-| Resource | Name / ID | Description |
-|----------|-----------|-------------|
+### Phase 1 + 2 (Lambda + Throttling)
+
+| Resource | Name | Description |
+|----------|------|-------------|
 | Lambda Function | `learn-apigw-products` | Products microservice |
 | Lambda Function | `learn-apigw-orders` | Orders microservice |
-| IAM Role | `ProductsFunctionServiceRole` | Execution role for products Lambda |
-| IAM Role | `OrdersFunctionServiceRole` | Execution role for orders Lambda |
 | API Gateway REST API | `learn-apigw` | The gateway |
-| API Gateway Stage | `dev` | Deployed stage with throttling config |
-| API Gateway Deployment | _(auto-named)_ | Snapshot of API config at deploy time |
+| API Gateway Stage | `dev` | Stage with throttling config |
 | Gateway Response | `THROTTLED` | Custom 429 for rate limit |
 | Gateway Response | `QUOTA_EXCEEDED` | Custom 429 for quota |
-| API Key | `basic-client` (ID: `379xhlii14`) | Low-volume client key |
-| API Key | `premium-client` (ID: `imh8gqb2qj`) | High-volume client key |
-| Usage Plan | `basic` | 5 RPS / 10 burst / 10 req/day |
-| Usage Plan | `premium` | 50 RPS / 100 burst / 10 000 req/day |
-| CloudWatch Log Group | `/aws/apigateway/learn-apigw-access` | Access logs (7-day retention) |
-| CloudWatch Log Group | `/aws/lambda/learn-apigw-products` | Lambda logs |
-| CloudWatch Log Group | `/aws/lambda/learn-apigw-orders` | Lambda logs |
-| S3 Bucket | `cdk-bootstrap-*` | CDK asset staging (Lambda JARs) |
-| CloudFormation Stack | `LearnApigwPhase1` | Parent stack for all resources |
+| API Key | `basic-client` (ID: `379xhlii14`) | 5 RPS / 10 req/day |
+| API Key | `premium-client` (ID: `imh8gqb2qj`) | 50 RPS / 10 000 req/day |
+| Usage Plan | `basic` | Attached to basic-client key |
+| Usage Plan | `premium` | Attached to premium-client key |
+| Log Group | `/aws/apigateway/learn-apigw-access` | Access logs (7-day retention) |
+
+### Phase 3 (ECS + NLB + VPC Link)
+
+| Resource | Name | Description |
+|----------|------|-------------|
+| VPC | `learn-apigw-vpc` | 2 public subnets, 2 AZs, no NAT |
+| ECS Cluster | `learn-apigw-cluster` | Fargate cluster |
+| ECS Task Definition | — | 0.25 vCPU / 512 MB |
+| ECS Service | `learn-apigw-user-service` | 1 Fargate task, public IP |
+| ECR Repository | _(CDK-managed)_ | Docker image for user-service |
+| NLB | `learn-apigw-user-nlb` | Internal, port 80 → ECS :8080 |
+| VPC Link | `learn-apigw-user-link` | Bridges API GW to NLB |
+| Security Group | `UserServiceSg` | Port 8080 open within VPC |
+| Log Group | `/ecs/learn-apigw-user-service` | ECS container logs (7-day retention) |
 
 ---
 
@@ -406,59 +365,68 @@ java --version      # OpenJDK 21
 mvn --version       # Maven 3.6+
 node --version      # Node 22 (via nvm)
 cdk --version       # AWS CDK 2.x
+docker --version    # Docker (required for ECS image build)
 aws sts get-caller-identity   # AWS credentials configured
 ```
 
-### Build Lambda JARs
+### Build All Modules
 
 ```bash
-cd /home/sonnet/dev/LearnAWSBasics
-JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 \
-  PATH=$JAVA_HOME/bin:$PATH \
-  mvn package -pl lambda-products,lambda-orders
-```
+export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+export PATH=$JAVA_HOME/bin:$PATH
 
-This produces:
-- `lambda-products/target/lambda-products-1.0.0.jar` — fat JAR (~4 MB)
-- `lambda-orders/target/lambda-orders-1.0.0.jar` — fat JAR (~4 MB)
+# Lambda JARs + user-service JAR (Docker picks up the user-service JAR)
+mvn package -pl lambda-products,lambda-orders,user-service -DskipTests
+```
 
 ### Deploy
 
 ```bash
-cd cdk
 source ~/.nvm/nvm.sh && nvm use 22
 export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 export PATH=$JAVA_HOME/bin:$PATH
 
-# First time only (per account/region)
+cd cdk
+
+# First time only (one-time per account/region)
 cdk bootstrap
 
-# Deploy / update
+# Deploy / update (CDK builds and pushes the Docker image automatically)
 cdk deploy --require-approval never
 ```
 
-### Destroy (clean up)
+### Destroy (stop all charges)
 
 ```bash
-cdk destroy
+cd cdk && cdk destroy
 ```
 
 ---
 
-## Cost on AWS Free Tier
+## Cost
 
-| Service | Free Tier Allowance | Our Usage |
-|---------|-------------------|-----------|
-| Lambda | 1M requests/month + 400K GB-s/month (permanent) | ~hundreds of test calls → $0 |
-| API Gateway REST | 1M calls/month for 12 months | ~hundreds of test calls → $0 |
-| S3 (CDK bootstrap) | 5 GB storage | ~10 MB (2 JARs) → $0 |
+### Phase 1 + 2 only (Lambda + API Gateway)
+
+| Service | Free Tier | Our Usage |
+|---------|-----------|-----------|
+| Lambda | 1M req/month + 400K GB-s (permanent) | Hundreds of test calls → $0 |
+| API Gateway REST | 1M calls/month for 12 months | Hundreds of test calls → $0 |
 | CloudWatch Logs | 5 GB ingestion/month | Minimal → $0 |
-| CloudFormation | Always free | $0 |
-| IAM | Always free | $0 |
+| S3 (CDK assets) | 5 GB | ~10 MB → $0 |
 
-**Expected monthly cost for this setup: $0**
+**Phase 1 + 2 total: $0/month**
 
-> **Warning for Phase 3:** Adding ALB (~$16/month) or NLB (~$16/month) or ECS Fargate will incur charges even on free tier. Always run `cdk destroy` after testing those phases.
+### Phase 3 additions (ECS + NLB)
+
+| Service | Free Tier | Estimated Cost |
+|---------|-----------|---------------|
+| ECS Fargate (0.25 vCPU, 0.5 GB) | Not included | ~$0.30/day while running |
+| NLB | Not included | ~$0.19/day while running |
+| ECR storage | 500 MB free | $0 (image is ~150 MB) |
+
+**Phase 3 adds: ~$0.50/day (~$15/month if left running)**
+
+> **Recommendation:** Run `cdk destroy` after each learning session. Re-deploy takes ~10 minutes and costs ~$0.05. Never leave it running overnight.
 
 ---
 
@@ -467,7 +435,7 @@ cdk destroy
 | Phase | Status | Topics |
 |-------|--------|--------|
 | **Phase 1** | ✅ Complete | Lambda proxy integration, REST API, stages, routes |
-| **Phase 2** | ✅ Complete | API Keys, Usage Plans, throttling layers, gateway responses, access logs |
-| **Phase 3** | 🔜 Planned | User Service on ECS, ALB integration, VPC Link |
-| **Phase 4** | 🔜 Planned | NLB integration, TCP routing, ALB vs NLB comparison |
+| **Phase 2** | ✅ Complete | API Keys, Usage Plans, 4-layer throttling, gateway responses, access logs |
+| **Phase 3** | ✅ Complete | ECS Fargate, Docker, NLB, VPC Link, private HTTP integration |
+| **Phase 4** | 🔜 Planned | ALB, ALB vs NLB comparison, HTTP API Gateway |
 | **Phase 5** | 🔜 Planned | Lambda authorizers, Cognito, WAF, caching, custom domains |
