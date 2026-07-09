@@ -1,0 +1,18 @@
+{
+  "expo": {
+    "name": "Cartograph",
+    "slug": "cartograph-prototype",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "backgroundColor": "#FAFAF7",
+    "platforms": ["android", "ios"],
+    "android": {
+      "package": "com.cartograph.prototype",
+      "versionCode": 1
+    },
+    "ios": {
+      "bundleIdentifier": "com.cartograph.prototype"
+    }
+  }
+}
