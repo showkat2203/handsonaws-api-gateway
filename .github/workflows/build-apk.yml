@@ -38,6 +38,13 @@ jobs:
       - name: Generate native Android project
         run: npx expo prebuild --platform android --no-install
 
+      - name: Configure Gradle memory
+        run: |
+          cat >> android/gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m
+          org.gradle.workers.max=1
+          EOF
+
       - name: Build debug APK
         run: |
           cd android
