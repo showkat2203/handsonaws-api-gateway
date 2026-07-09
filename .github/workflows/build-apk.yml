@@ -30,6 +30,12 @@ jobs:
           java-version: 17
 
       - name: Set up Android SDK
+        id: setup-android
+        uses: android-actions/setup-android@v3
+        continue-on-error: true
+
+      - name: Retry Set up Android SDK
+        if: steps.setup-android.outcome == 'failure'
         uses: android-actions/setup-android@v3
 
       - name: Install dependencies
