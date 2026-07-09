@@ -13,6 +13,10 @@
     },
     "ios": {
       "bundleIdentifier": "com.cartograph.prototype"
+    },
+    "splash": {
+      "backgroundColor": "#FAFAF7",
+      "resizeMode": "contain"
     }
   }
 }
