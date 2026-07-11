@@ -4,6 +4,8 @@ A hands-on learning project that builds a mini e-commerce API on AWS, progressin
 
 **Stack:** AWS CDK (Java) · Lambda (Java 21) · ECS Fargate · API Gateway REST API · NLB · VPC Link
 
+> Note: `cartograph/` in this repo is an unrelated Expo/React Native prototype — see [`cartograph/README.md`](cartograph/README.md).
+
 ---
 
 ## Project Structure
