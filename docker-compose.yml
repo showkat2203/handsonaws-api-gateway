@@ -1,0 +1,83 @@
+name: plm
+
+services:
+  gremlin-server:
+    image: tinkerpop/gremlin-server:3.7.2
+    ports:
+      - "8182:8182"
+    volumes:
+      - ./docker/gremlin-server/gremlin-server.yaml:/opt/gremlin-server/conf/gremlin-server.yaml:ro
+      - ./docker/gremlin-server/tinkergraph-empty.properties:/opt/gremlin-server/conf/tinkergraph-empty.properties:ro
+      - ./docker/gremlin-server/init.groovy:/opt/gremlin-server/scripts/init.groovy:ro
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/8182'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
+    command: ["-jar", "DynamoDBLocal.jar", "-inMemory", "-sharedDb"]
+    ports:
+      - "8000:8000"
+
+  plm-api:
+    build:
+      context: .
+      dockerfile: plm-backend/plm-api/Dockerfile
+    ports:
+      - "8080:8080"
+    depends_on:
+      gremlin-server:
+        condition: service_healthy
+      dynamodb-local:
+        condition: service_started
+    environment:
+      JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me-please-32chars}
+      GRAPH_MODE: remote
+      GREMLIN_HOST: gremlin-server
+      GREMLIN_PORT: 8182
+      DYNAMO_ENDPOINT: http://dynamodb-local:8000
+      DYNAMO_REGION: ${DYNAMO_REGION:-us-east-1}
+      DYNAMO_ACCESS_KEY: ${DYNAMO_ACCESS_KEY:-local}
+      DYNAMO_SECRET_KEY: ${DYNAMO_SECRET_KEY:-local}
+      SEED_ENABLED: "true"
+
+  chatbot-service:
+    build:
+      context: .
+      dockerfile: chatbot-service/Dockerfile
+    ports:
+      - "8081:8081"
+    depends_on:
+      gremlin-server:
+        condition: service_healthy
+      dynamodb-local:
+        condition: service_started
+      plm-api:
+        condition: service_started
+    environment:
+      JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me-please-32chars}
+      GRAPH_MODE: remote
+      GREMLIN_HOST: gremlin-server
+      GREMLIN_PORT: 8182
+      DYNAMO_ENDPOINT: http://dynamodb-local:8000
+      DYNAMO_REGION: ${DYNAMO_REGION:-us-east-1}
+      DYNAMO_ACCESS_KEY: ${DYNAMO_ACCESS_KEY:-local}
+      DYNAMO_SECRET_KEY: ${DYNAMO_SECRET_KEY:-local}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?Set ANTHROPIC_API_KEY in your .env file}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-opus-4-8}
+      ANTHROPIC_MAX_TOKENS: ${ANTHROPIC_MAX_TOKENS:-2048}
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - plm-api
+      - chatbot-service
+    environment:
+      REACT_APP_GRAPHQL_URL: http://localhost:8080/graphql
+      REACT_APP_AUTH_URL: http://localhost:8080/auth/login
+      REACT_APP_CHAT_URL: http://localhost:8081/chat

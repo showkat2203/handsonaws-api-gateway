@@ -35,3 +35,11 @@ out/
 
 # Compiled Java
 *.class
+
+# Node / React
+node_modules/
+frontend/build/
+
+# Local environment overrides
+.env
+.env.local

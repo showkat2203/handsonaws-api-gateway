@@ -1,0 +1,41 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: plm-api
+  graphql:
+    graphiql:
+      enabled: true
+    path: /graphql
+    cors:
+      allowed-origins: "*"
+      allowed-methods: "*"
+      allowed-headers: "*"
+
+plm:
+  jwt:
+    secret: ${JWT_SECRET:dev-only-secret-change-me-please-32chars}
+    ttl-minutes: ${JWT_TTL_MINUTES:120}
+  graph:
+    mode: ${GRAPH_MODE:remote}
+    host: ${GREMLIN_HOST:localhost}
+    port: ${GREMLIN_PORT:8182}
+  dynamo:
+    endpoint: ${DYNAMO_ENDPOINT:http://localhost:8000}
+    region: ${DYNAMO_REGION:us-east-1}
+    access-key: ${DYNAMO_ACCESS_KEY:local}
+    secret-key: ${DYNAMO_SECRET_KEY:local}
+  seed:
+    enabled: ${SEED_ENABLED:true}
+
+logging:
+  level:
+    root: INFO
+    com.plm: INFO
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

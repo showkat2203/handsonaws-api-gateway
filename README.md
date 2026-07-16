@@ -1,3 +1,233 @@
+# PLM Chatbot System (Data Center Hardware)
+
+A Product Lifecycle Management (PLM) system for tracking data-center hardware components
+(servers, racks, PSUs, NICs, cables), with an AI chatbot layer that answers natural-language
+questions about the same data. Built as independently runnable/testable modules that share one
+internal service layer.
+
+**Stack:** Java 21 + Spring Boot · Spring for GraphQL (UI transport only) · Apache TinkerPop /
+Gremlin (BOM graph) · DynamoDB Enhanced Client (attributes) · Spring Security + JWT · Claude API
+(chatbot) · React + Apollo Client
+
+## Architecture
+
+```
+                         ┌─────────────────────────┐
+                         │   React frontend (3000) │
+                         │  Apollo Client │ Chat UI │
+                         └───────┬─────────┬───────┘
+                                 │GraphQL  │REST
+                                 │         │POST /chat
+                    ┌────────────▼───┐   ┌─▼──────────────────┐
+                    │  plm-api (8080)│   │chatbot-service(8081)│
+                    │  GraphQL       │   │  ChatController      │
+                    │  resolvers     │   │  ToolRegistry/Executor│
+                    │  (thin wrappers)│   │  AnthropicLlmProvider │
+                    └───────┬────────┘   └──────────┬───────────┘
+                            │  both call, in-process, the SAME     │
+                            │  internal service layer:             │
+                            └──────────────┬────────────────────────┘
+                                           ▼
+                          ┌─────────────────────────────────┐
+                          │   plm-service (framework-agnostic)│
+                          │ PartService / BomService /        │
+                          │ SupplierService / ChangeOrderService│
+                          └───────┬─────────────────┬─────────┘
+                                  │                  │
+                     ┌────────────▼───────┐ ┌────────▼─────────────┐
+                     │ GraphRepository     │ │ Dynamo*Repository     │
+                     │ (TinkerPop fluent   │ │ (DynamoDbEnhancedClient)│
+                     │  GraphTraversalSource)│ │ part attrs, lifecycle,│
+                     │ BOM edges, where-used,│ │ change orders          │
+                     │ supplier→part links   │ └────────┬───────────────┘
+                     └────────┬─────────────┘          │
+                              ▼                         ▼
+                     Gremlin Server (8182)        DynamoDB Local (8000)
+                     (TinkerGraph, Neptune-compatible)
+```
+
+**The chatbot never calls GraphQL.** It's a separate Spring Boot process
+(`chatbot-service`, its own container) whose tools invoke `plm-service`'s Java interfaces
+directly, in-process, exactly like the GraphQL resolvers do. Both processes validate the same
+JWT (shared `JwtUtil`/secret) and populate the same `PlmPrincipalContext`, so the service layer's
+role checks are enforced identically no matter which entry point is calling.
+
+## Module layout
+
+```
+plm-backend/
+  pom.xml            reactor aggregator (plm-service, plm-api, ../chatbot-service)
+  plm-service/        the internal service layer — framework-agnostic domain model,
+                       PartService/BomService/SupplierService/ChangeOrderService (interfaces
+                       + impls), GraphRepository (TinkerPop) + Dynamo*Repository, JWT util.
+                       No GraphQL, no HTTP. Depended on by both plm-api and chatbot-service.
+  plm-api/             the GraphQL layer — thin resolvers over plm-service, DataLoader
+                       (@BatchMapping) batching for Part.supplier / ChangeOrder.affectedParts /
+                       Supplier.parts, Spring Security + JWT filter, /auth/login (demo users),
+                       seed data runner. The bootable Spring Boot app for the PLM backend.
+chatbot-service/       standalone Spring Boot app exposing POST /chat. Wraps 9 read-only
+                       plm-service methods as tools with JSON-schema descriptions, calls Claude
+                       via java.net.http.HttpClient behind an LlmProvider interface, runs the
+                       tool-calling loop, and returns the answer + a full tool-call trace.
+frontend/              React + Apollo Client: parts browser/search, part detail, BOM tree,
+                       where-used, and a chat panel showing the tool-call trace.
+docker/gremlin-server/  Gremlin Server config (empty TinkerGraph, ANY id manager so our
+                       String part/supplier ids work) for local dev / docker-compose.
+docker-compose.yml      brings up everything: plm-api, chatbot-service, Gremlin Server,
+                       DynamoDB Local, and the React dev server.
+```
+
+### Why this split (and how to change it)
+
+The chatbot runs **in-process by default** — its own process's Java method calls straight into
+`plm-service`, never over the network or through GraphQL. In docker-compose this shows up as two
+separate containers (`plm-api`, `chatbot-service`) because each is its own Spring Boot process, but
+"in-process" here refers to *within the chatbot's own process*, not a shared JVM with the GraphQL
+API — both processes independently embed the same `plm-service` jar. If you need the chatbot to
+run as a genuinely separate deployable that talks to the PLM backend over the network instead
+(e.g. a different team owns it, or you want to scale it independently of plm-service's DB
+connections), replace its direct `PartService`/`BomService`/... calls in
+`chatbot-service/src/main/java/com/plm/chatbot/tools/ToolRegistry.java` with calls to a small
+internal REST or gRPC facade exposed by `plm-api` — the tool JSON schemas and the
+tool-calling loop in `ChatService` don't need to change at all.
+
+## Prerequisites
+
+- Java 21, Maven 3.9+
+- Node 18+ (for the frontend)
+- Docker + Docker Compose (for Gremlin Server / DynamoDB Local, or the one-command full stack)
+- An Anthropic API key (for the chatbot) — https://console.anthropic.com/
+
+## Quick start — everything in one command
+
+```bash
+cp .env.example .env
+# edit .env and set ANTHROPIC_API_KEY
+
+docker compose up --build
+```
+
+This starts Gremlin Server (8182), DynamoDB Local (8000), `plm-api` (8080, seeds sample data on
+first boot), `chatbot-service` (8081), and the React dev server (3000).
+
+Open http://localhost:3000, log in with one of the seeded demo accounts, and use the Parts
+Browser or the Assistant tab.
+
+| username | password      | role     |
+|----------|---------------|----------|
+| admin    | admin123      | ADMIN (full access, incl. approving ECOs, deleting parts) |
+| engineer | engineer123   | ENGINEER (create/update parts, BOM links, ECOs) |
+| viewer   | viewer123     | VIEWER (read-only) |
+
+## Running modules independently
+
+Each module builds and tests on its own — useful for iterating without the whole stack.
+
+### plm-service (internal service layer)
+
+```bash
+cd plm-backend
+mvn -N install                       # installs the reactor parent pom
+cd plm-service && mvn install        # unit tests run against a real embedded TinkerGraph
+```
+
+### plm-api (GraphQL backend)
+
+Requires Gremlin Server + DynamoDB Local running (`docker compose up gremlin-server dynamodb-local`,
+or point `GRAPH_MODE=embedded` at an in-JVM TinkerGraph for a zero-dependency quick start — no
+Neptune/Gremlin Server needed, though data won't be shared with a separately-run chatbot-service).
+
+```bash
+cd plm-backend/plm-api
+JWT_SECRET=dev-only-secret-change-me-please-32chars mvn spring-boot:run
+```
+
+GraphiQL is available at http://localhost:8080/graphiql once running. Get a token first:
+
+```bash
+curl -s http://localhost:8080/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"engineer","password":"engineer123"}'
+```
+
+Paste the returned `token` into GraphiQL's headers panel as `{"Authorization": "Bearer <token>"}`.
+
+### chatbot-service
+
+Requires the same Gremlin Server / DynamoDB Local, plus `ANTHROPIC_API_KEY`:
+
+```bash
+cd chatbot-service
+JWT_SECRET=dev-only-secret-change-me-please-32chars ANTHROPIC_API_KEY=sk-ant-... mvn spring-boot:run
+```
+
+```bash
+TOKEN=$(curl -s http://localhost:8080/auth/login -H 'Content-Type: application/json' \
+  -d '{"username":"engineer","password":"engineer123"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+
+curl -s http://localhost:8081/chat \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"message": "What assemblies use PSU-2200?", "history": []}' | python3 -m json.tool
+```
+
+### frontend
+
+```bash
+cd frontend
+cp .env.example .env   # defaults already point at localhost:8080 / 8081
+npm install
+npm start
+```
+
+## Example queries
+
+GraphQL (via GraphiQL or Apollo Client in the frontend):
+
+```graphql
+query { searchParts(filter: { lifecycleState: EOL }) { items { id name type supplier { name } } } }
+query { bom(partId: "R-14") { part { name } quantity children { part { name } quantity } } }
+query { whereUsed(partId: "PSU-2200") { id name type } }
+query { supplierParts(supplierId: "SUP-...") { id name lifecycleState } }
+```
+
+Chatbot (`POST /chat`), same questions in natural language:
+
+- "What assemblies use PSU-2200?"
+- "Show the BOM for rack R-14"
+- "Which parts from supplier Acme are EOL?"
+- "What's the status of the change order to replace PSU-1100?"
+
+The response includes both the composed answer and a `toolCalls` trace (tool name, params,
+result, duration) showing exactly which `plm-service` methods the LLM decided to call.
+
+## Testing
+
+```bash
+cd plm-backend/plm-service && mvn test   # domain services (Mockito) + graph repo (real embedded TinkerGraph)
+cd plm-backend/plm-api && mvn test       # GraphQL resolvers (thin-wrapper delegation tests)
+cd chatbot-service && mvn test           # tool registry, tool executor, chat loop, Anthropic request/response mapping
+```
+
+## Data model
+
+- **Part** — id, name, type (RACK/SERVER/PSU/NIC/CABLE/OTHER), lifecycle state
+  (DESIGN → ACTIVE → EOL, forward-only), revision, supplier, free-form attributes.
+- **BOM** — a graph edge `parent -[contains, quantity]-> child` between parts; a rack contains
+  servers, a server contains PSUs/NICs/cables. Cycle-checked on write.
+- **Supplier** — linked to parts via a graph edge, not a foreign key, so where-used/supplier
+  queries are graph traversals rather than joins.
+- **ChangeOrder (ECO)** — workflow: DRAFT → SUBMITTED → APPROVED/REJECTED → IMPLEMENTED, with
+  role-gated transitions (ENGINEER submits/implements, ADMIN approves/rejects).
+
+## Security notes
+
+`DemoUserStore` (in `plm-api`) is a hardcoded, in-memory identity store for this sample app —
+swap it for a real identity provider before deploying anywhere real. Everything downstream
+(`JwtUtil`, both `JwtAuthFilter`s, the service layer's `Authz` checks) only depends on the
+issued JWT's subject + roles claims, so that's the only piece that needs replacing.
+
+---
+
 # HandsOn AWS API Gateway
 
 A hands-on learning project that builds a mini e-commerce API on AWS, progressing from basic Lambda integration through throttling, rate limiting, and private microservices behind VPC Link.

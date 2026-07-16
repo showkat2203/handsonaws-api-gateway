@@ -1,0 +1,180 @@
+scalar DateTime
+
+enum PartType {
+    RACK
+    SERVER
+    PSU
+    NIC
+    CABLE
+    OTHER
+}
+
+enum LifecycleState {
+    DESIGN
+    ACTIVE
+    EOL
+}
+
+enum ChangeOrderStatus {
+    DRAFT
+    SUBMITTED
+    APPROVED
+    REJECTED
+    IMPLEMENTED
+}
+
+type KeyValue {
+    key: String!
+    value: String!
+}
+
+type Part {
+    id: ID!
+    name: String!
+    description: String
+    type: PartType!
+    lifecycleState: LifecycleState!
+    revision: String
+    supplierId: ID
+    supplier: Supplier
+    attributes: [KeyValue!]!
+    createdAt: DateTime
+    updatedAt: DateTime
+}
+
+type Supplier {
+    id: ID!
+    name: String!
+    contactEmail: String
+    address: String
+    active: Boolean!
+    parts: [Part!]!
+}
+
+type ChangeOrder {
+    id: ID!
+    title: String!
+    description: String
+    status: ChangeOrderStatus!
+    affectedPartIds: [ID!]!
+    affectedParts: [Part!]!
+    createdBy: String
+    createdAt: DateTime
+    updatedAt: DateTime
+    implementedAt: DateTime
+}
+
+type BomNode {
+    part: Part!
+    quantity: Int!
+    children: [BomNode!]!
+}
+
+type PartPage {
+    items: [Part!]!
+    totalCount: Int!
+    page: Int!
+    size: Int!
+}
+
+type ChangeOrderPage {
+    items: [ChangeOrder!]!
+    totalCount: Int!
+    page: Int!
+    size: Int!
+}
+
+type SupplierPage {
+    items: [Supplier!]!
+    totalCount: Int!
+    page: Int!
+    size: Int!
+}
+
+input PartFilterInput {
+    nameContains: String
+    type: PartType
+    lifecycleState: LifecycleState
+    supplierId: ID
+    page: Int = 0
+    size: Int = 20
+}
+
+input ChangeOrderFilterInput {
+    status: ChangeOrderStatus
+    partId: ID
+    page: Int = 0
+    size: Int = 20
+}
+
+input KeyValueInput {
+    key: String!
+    value: String!
+}
+
+input NewPartInput {
+    name: String!
+    description: String
+    type: PartType!
+    revision: String
+    supplierId: ID
+    attributes: [KeyValueInput!]
+}
+
+input PartUpdateInput {
+    name: String
+    description: String
+    revision: String
+    supplierId: ID
+    attributes: [KeyValueInput!]
+}
+
+input NewSupplierInput {
+    name: String!
+    contactEmail: String
+    address: String
+    active: Boolean = true
+}
+
+input NewChangeOrderInput {
+    title: String!
+    description: String
+    affectedPartIds: [ID!]
+}
+
+type Query {
+    part(id: ID!): Part
+    searchParts(filter: PartFilterInput): PartPage!
+
+    bom(partId: ID!): BomNode
+    whereUsed(partId: ID!): [Part!]!
+
+    supplier(id: ID!): Supplier
+    suppliers(page: Int = 0, size: Int = 20): SupplierPage!
+    supplierParts(supplierId: ID!): [Part!]!
+
+    changeOrder(id: ID!): ChangeOrder
+    changeOrders(filter: ChangeOrderFilterInput): ChangeOrderPage!
+}
+
+type Mutation {
+    createPart(input: NewPartInput!): Part!
+    updatePart(id: ID!, input: PartUpdateInput!): Part!
+    deletePart(id: ID!): Boolean!
+    updateLifecycle(id: ID!, state: LifecycleState!): Part!
+
+    addBomComponent(parentId: ID!, childId: ID!, quantity: Int!): BomNode!
+    removeBomComponent(parentId: ID!, childId: ID!): Boolean!
+
+    createSupplier(input: NewSupplierInput!): Supplier!
+    updateSupplier(id: ID!, input: NewSupplierInput!): Supplier!
+    deleteSupplier(id: ID!): Boolean!
+
+    createChangeOrder(input: NewChangeOrderInput!): ChangeOrder!
+    updateChangeOrder(id: ID!, input: NewChangeOrderInput!): ChangeOrder!
+    submitChangeOrder(id: ID!): ChangeOrder!
+    approveChangeOrder(id: ID!): ChangeOrder!
+    rejectChangeOrder(id: ID!): ChangeOrder!
+    implementChangeOrder(id: ID!): ChangeOrder!
+    deleteChangeOrder(id: ID!): Boolean!
+}
